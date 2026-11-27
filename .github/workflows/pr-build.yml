@@ -1,13 +1,12 @@
 name: PR Build
 on:
-  push:
-    branches: ['claude/**']
   pull_request:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # windows-latest enthält Visual Studio 18 ohne MFC (MSB8041), daher VS2022-Image verwenden
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
