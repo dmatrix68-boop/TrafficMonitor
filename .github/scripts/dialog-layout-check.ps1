@@ -34,13 +34,16 @@ foreach ($f in Get-ChildItem $langDir -Filter *.ini) {
     }
 }
 
-# Portable Konfiguration neben der exe anlegen (UTF-8 mit BOM, wie von CIniHelper erwartet): Sprache setzen, Update-Prüfung und Taskleistenfenster aus
+# Portable Konfiguration neben der exe anlegen (UTF-8 mit BOM, wie von CIniHelper erwartet): Sprache setzen, Update-Prüfung und Taskleistenfenster aus,
+# langer Schriftname für das Taskleistenfenster (prüft, ob Eingabefelder den Text ab dem Anfang zeigen)
 Set-Content -Path (Join-Path $exeDir "global_cfg.ini") -Encoding UTF8 -Value "[config]`r`nportable_mode = true`r`n"
 Set-Content -Path (Join-Path $exeDir "config.ini") -Encoding UTF8 -Value @"
 [general]
 language = $languageValue
 check_update_when_start = false
 hardware_monitor_item = 0
+[task_bar]
+font_name = Segoe UI Variable Display Semibold
 [config]
 show_task_bar_wnd = false
 show_notify_icon = true

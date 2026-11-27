@@ -56,7 +56,7 @@ public static class DialogLayoutCheck
 
     const uint WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101, WM_COMMAND = 0x0111, WM_GETTEXT = 0x000D, WM_GETTEXTLENGTH = 0x000E, WM_VSCROLL = 0x0115, WM_CLOSE = 0x0010;
     const uint TCM_GETITEMCOUNT = 0x1304, TCM_SETCURSEL = 0x130C;
-    const uint EM_CHARFROMPOS = 0x00D7, BM_GETIMAGE = 0x00F6, CB_GETCURSEL = 0x0147, CB_GETLBTEXTLEN = 0x0149, CB_GETLBTEXT = 0x0148;
+    const uint EM_SETSEL = 0x00B1, EM_CHARFROMPOS = 0x00D7, BM_GETIMAGE = 0x00F6, CB_GETCURSEL = 0x0147, CB_GETLBTEXTLEN = 0x0149, CB_GETLBTEXT = 0x0148;
     const int GWL_STYLE = -16, GWL_EXSTYLE = -20;
     const int WS_VISIBLE = 0x10000000;
     const uint DT_CALCRECT = 0x400, DT_SINGLELINE = 0x20, DT_WORDBREAK = 0x10, DT_NOPREFIX = 0x800, DT_EXPANDTABS = 0x40;
@@ -478,6 +478,20 @@ public static class DialogLayoutCheck
                 for (int k = 0; k < 10; k++) SendMessage(page, WM_VSCROLL, new IntPtr(2 /* SB_PAGEUP */), IntPtr.Zero);
                 Thread.Sleep(200);
                 CheckPage(page, name);
+
+                // Kontrollversuch: Funktioniert die Erkennung gescrollter Eingabefelder? Text eines langen
+                // Eingabefelds markieren (wie Windows es beim Fokuswechsel tut) und prüfen, ob es erkannt wird.
+                foreach (IntPtr h in Children(page, true))
+                {
+                    if (ClassOf(h) != "Edit" || (GetWindowLong(h, GWL_STYLE) & 0x4) != 0) continue;
+                    string t = TextOf(h);
+                    if (t.Length < 25) continue;
+                    RECT er; GetClientRect(h, out er);
+                    SendMessage(h, EM_SETSEL, IntPtr.Zero, new IntPtr(-1));
+                    int pos = SendMessage(h, EM_CHARFROMPOS, IntPtr.Zero, new IntPtr((((er.Bottom - er.Top) / 2) << 16) | 2)).ToInt32() & 0xFFFF;
+                    Console.WriteLine("Kontrollversuch " + name + ": \"" + t + "\" nach Markieren erstes sichtbares Zeichen = " + pos + (pos > 0 ? " (Erkennung funktioniert)" : " (Text passt ganz hinein)"));
+                    SendMessage(h, EM_SETSEL, IntPtr.Zero, IntPtr.Zero);
+                }
 
                 int shot = 1;
                 int lastPos = -1;
