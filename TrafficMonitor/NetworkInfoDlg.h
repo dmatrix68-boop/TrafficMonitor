@@ -12,7 +12,7 @@ class CNetworkInfoDlg : public CBaseDialog
     DECLARE_DYNAMIC(CNetworkInfoDlg)
 
 public:
-    CNetworkInfoDlg(vector<NetWorkConection>& adapters, MIB_IFROW* pIfRow, int connection_selected, CWnd* pParent = NULL);   // 标准构造函数
+    CNetworkInfoDlg(vector<NetWorkConection>& adapters, MIB_IFTABLE*& pIfTable, int connection_selected, CCriticalSection* pConnectionCritical, CWnd* pParent = NULL);   // 标准构造函数
     virtual ~CNetworkInfoDlg();
 
     // 对话框数据
@@ -25,7 +25,8 @@ public:
 protected:
 
     vector<NetWorkConection>& m_connections;
-    MIB_IFROW* m_pIfRow;
+    MIB_IFTABLE*& m_pIfTable;      //引用主窗口中的m_pIfTable（主窗口重新初始化连接时它可能会被重新分配）
+    CCriticalSection* m_pConnectionCritical;   //保护m_pIfTable和m_connections的锁（不能为nullptr）
     int m_connection_selected;		//当前对话框显示的连接
     int m_current_connection;		//初始选择的连接
 
@@ -40,7 +41,7 @@ protected:
     //void GetIPAddress();	//获取IP地址
     void ShowInfo();
     void GetProgramElapsedTime();
-    MIB_IFROW& GetConnectIfTable(int connection_index);    //获取当前选择的网络连接的MIB_IFROW对象。connection_index为m_connections中的索引
+    MIB_IFROW GetConnectIfTable(int connection_index);    //获取当前选择的网络连接的MIB_IFROW对象。connection_index为m_connections中的索引
     NetWorkConection GetConnection(int connection_index); //获取当前选择的网络连接的NetWorkConection对象。connection_index为m_connections中的索引
 
     //获取外网IP的线程函数

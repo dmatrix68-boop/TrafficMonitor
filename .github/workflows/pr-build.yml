@@ -1,0 +1,39 @@
+name: PR Build
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # windows-latest enthält Visual Studio 18 ohne MFC (MSB8041), daher VS2022-Image verwenden
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - solution: TrafficMonitor.sln
+            configuration: Release
+            platform: x64
+          - solution: TrafficMonitor_Lite.sln
+            configuration: Release (lite)
+            platform: x64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Add msbuild to PATH
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Run msbuild
+      run: msbuild ${{ matrix.solution }} "-p:configuration=${{ matrix.configuration }}" -p:platform=${{ matrix.platform }} -p:platformToolset=v143 -m
+
+    - name: Upload build output
+      uses: actions/upload-artifact@v4
+      with:
+        name: TrafficMonitor_${{ matrix.platform }}_${{ matrix.configuration == 'Release' && 'full' || 'lite' }}_${{ github.sha }}
+        path: |
+          Bin/${{ matrix.platform }}/${{ matrix.configuration }}/*.exe
+          Bin/${{ matrix.platform }}/${{ matrix.configuration }}/*.dll
+          Bin/${{ matrix.platform }}/${{ matrix.configuration }}/*.config
+        if-no-files-found: error
+        retention-days: 30

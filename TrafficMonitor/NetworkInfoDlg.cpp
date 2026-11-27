@@ -11,8 +11,8 @@
 
 IMPLEMENT_DYNAMIC(CNetworkInfoDlg, CBaseDialog)
 
-CNetworkInfoDlg::CNetworkInfoDlg(vector<NetWorkConection>& adapters, MIB_IFROW* pIfRow, int connection_selected, CWnd* pParent /*=NULL*/)
-    : CBaseDialog(IDD_NETWORK_INFO_DIALOG, pParent), m_connections(adapters), m_pIfRow(pIfRow), m_connection_selected(connection_selected)
+CNetworkInfoDlg::CNetworkInfoDlg(vector<NetWorkConection>& adapters, MIB_IFTABLE*& pIfTable, int connection_selected, CCriticalSection* pConnectionCritical, CWnd* pParent /*=NULL*/)
+    : CBaseDialog(IDD_NETWORK_INFO_DIALOG, pParent), m_connections(adapters), m_pIfTable(pIfTable), m_pConnectionCritical(pConnectionCritical), m_connection_selected(connection_selected)
 {
     m_current_connection = connection_selected;
 }
@@ -25,7 +25,7 @@ CNetworkInfoDlg::~CNetworkInfoDlg()
 void CNetworkInfoDlg::ShowInfo()
 {
     CString temp;
-    MIB_IFROW& network_info = GetConnectIfTable(m_connection_selected);
+    MIB_IFROW network_info = GetConnectIfTable(m_connection_selected);
     //接口名
     m_info_list.SetItemText(0, 1, network_info.wszName);
     //接口描述
@@ -136,16 +136,16 @@ void CNetworkInfoDlg::GetProgramElapsedTime()
     m_info_list.SetItemText(13, 1, temp);
 }
 
-MIB_IFROW& CNetworkInfoDlg::GetConnectIfTable(int connection_index)
+MIB_IFROW CNetworkInfoDlg::GetConnectIfTable(int connection_index)
 {
-    static MIB_IFROW nouse{};
+    CSingleLock sync(m_pConnectionCritical, TRUE);
     if (connection_index >= 0 && connection_index < static_cast<int>(m_connections.size()))
     {
         int index = m_connections[connection_index].index;
-        if (m_pIfRow != nullptr)
-            return m_pIfRow[index];
+        if (m_pIfTable != nullptr && index >= 0 && static_cast<DWORD>(index) < m_pIfTable->dwNumEntries)
+            return m_pIfTable->table[index];
     }
-    return nouse;
+    return MIB_IFROW();
 }
 
 NetWorkConection CNetworkInfoDlg::GetConnection(int connection_index)
@@ -238,7 +238,10 @@ BOOL CNetworkInfoDlg::OnInitDialog()
     SetIcon(theApp.GetMenuIcon(IDI_INFO), FALSE);		// 设置小图标
 
     //重新获取IP地址
-    CAdapterCommon::RefreshIpAddress(m_connections);
+    {
+        CSingleLock sync(m_pConnectionCritical, TRUE);
+        CAdapterCommon::RefreshIpAddress(m_connections);
+    }
 
     //初始化列表控件
     CRect rect;
