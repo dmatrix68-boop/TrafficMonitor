@@ -360,6 +360,34 @@ public static class DialogLayoutCheck
 
     static string s_fontName = "Segoe UI";
 
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll")] static extern IntPtr VirtualAllocEx(IntPtr proc, IntPtr addr, UIntPtr size, uint type, uint protect);
+    [DllImport("kernel32.dll")] static extern bool VirtualFreeEx(IntPtr proc, IntPtr addr, UIntPtr size, uint type);
+    [DllImport("kernel32.dll")] static extern bool ReadProcessMemory(IntPtr proc, IntPtr addr, byte[] buf, UIntPtr size, out UIntPtr read);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+
+    // Liest die Rechtecke der Tab-Reiter (TCM_GETITEMRECT benötigt Speicher im Zielprozess)
+    static List<string> TabItemRects(uint pid, IntPtr tab)
+    {
+        List<string> result = new List<string>();
+        IntPtr proc = OpenProcess(0x0008 | 0x0010 | 0x0020 | 0x0400, false, pid);
+        if (proc == IntPtr.Zero) { result.Add("(Prozess nicht geöffnet)"); return result; }
+        IntPtr mem = VirtualAllocEx(proc, IntPtr.Zero, new UIntPtr(16), 0x1000 | 0x2000, 0x04);
+        int count = SendMessage(tab, TCM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero).ToInt32();
+        for (int i = 0; i < count; i++)
+        {
+            SendMessage(tab, 0x130A /* TCM_GETITEMRECT */, new IntPtr(i), mem);
+            byte[] buf = new byte[16];
+            UIntPtr read;
+            ReadProcessMemory(proc, mem, buf, new UIntPtr(16), out read);
+            int l = BitConverter.ToInt32(buf, 0), t = BitConverter.ToInt32(buf, 4), r = BitConverter.ToInt32(buf, 8), b = BitConverter.ToInt32(buf, 12);
+            result.Add("Reiter " + i + ": x=" + l + ".." + r + " (" + (r - l) + "px), y=" + t + ".." + b);
+        }
+        VirtualFreeEx(proc, mem, UIntPtr.Zero, 0x8000);
+        CloseHandle(proc);
+        return result;
+    }
+
     static string PageName(IntPtr page, int index)
     {
         foreach (IntPtr h in Children(page, true))
@@ -453,6 +481,18 @@ public static class DialogLayoutCheck
 
             // Tab-Reiter passen nicht nebeneinander, wenn Pfeiltasten angezeigt werden
             IntPtr updown = FindChildByClass(tab, "msctls_updown32");
+            {
+                RECT tc; GetClientRect(tab, out tc);
+                Console.WriteLine("Tab-Steuerelement: Breite " + (tc.Right - tc.Left) + "px, Reiter: " + SendMessage(tab, TCM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero).ToInt32());
+                foreach (string line in TabItemRects(pid, tab)) Console.WriteLine("  " + line);
+                if (updown != IntPtr.Zero)
+                {
+                    RECT ur; GetWindowRect(updown, out ur);
+                    POINT up = new POINT { X = ur.Left, Y = ur.Top };
+                    ScreenToClient(tab, ref up);
+                    Console.WriteLine("  Pfeil-Element: sichtbar=" + ((GetWindowLong(updown, GWL_STYLE) & WS_VISIBLE) != 0) + " x=" + up.X + " y=" + up.Y + " " + (ur.Right - ur.Left) + "x" + (ur.Bottom - ur.Top));
+                }
+            }
             if (updown != IntPtr.Zero && (GetWindowLong(updown, GWL_STYLE) & WS_VISIBLE) != 0)
                 s_issues.Add("Dialog: Tab-Reiter passen nicht nebeneinander (Pfeile werden angezeigt)");
 
