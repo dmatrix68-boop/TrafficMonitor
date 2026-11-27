@@ -54,9 +54,9 @@ public static class DialogLayoutCheck
     [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
     [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
 
-    const uint WM_COMMAND = 0x0111, WM_GETTEXT = 0x000D, WM_GETTEXTLENGTH = 0x000E, WM_VSCROLL = 0x0115, WM_CLOSE = 0x0010;
+    const uint WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101, WM_COMMAND = 0x0111, WM_GETTEXT = 0x000D, WM_GETTEXTLENGTH = 0x000E, WM_VSCROLL = 0x0115, WM_CLOSE = 0x0010;
     const uint TCM_GETITEMCOUNT = 0x1304, TCM_SETCURSEL = 0x130C;
-    const uint BM_GETIMAGE = 0x00F6, CB_GETCURSEL = 0x0147, CB_GETLBTEXTLEN = 0x0149, CB_GETLBTEXT = 0x0148;
+    const uint EM_CHARFROMPOS = 0x00D7, BM_GETIMAGE = 0x00F6, CB_GETCURSEL = 0x0147, CB_GETLBTEXTLEN = 0x0149, CB_GETLBTEXT = 0x0148;
     const int GWL_STYLE = -16, GWL_EXSTYLE = -20;
     const int WS_VISIBLE = 0x10000000;
     const uint DT_CALCRECT = 0x400, DT_SINGLELINE = 0x20, DT_WORDBREAK = 0x10, DT_NOPREFIX = 0x800, DT_EXPANDTABS = 0x40;
@@ -75,7 +75,7 @@ public static class DialogLayoutCheck
         public bool IsGroupBox;
     }
 
-    static Dictionary<int, string> s_ids = new Dictionary<int, string>();
+    static Dictionary<int, List<string>> s_ids = new Dictionary<int, List<string>>();
     static List<string> s_issues = new List<string>();
     static List<string> s_notes = new List<string>();
 
@@ -218,6 +218,14 @@ public static class DialogLayoutCheck
                     s_issues.Add(page + ": Text abgeschnitten: " + Describe(c) + " - braucht " + (s.Width + extra) + "px, verfügbar " + w + "px");
             }
         }
+        else if (c.Class == "Edit")
+        {
+            // Einzeiliges Eingabefeld: wird der Text ab dem Anfang angezeigt?
+            if ((c.Style & 0x4 /* ES_MULTILINE */) != 0) return;
+            int pos = SendMessage(c.Hwnd, EM_CHARFROMPOS, IntPtr.Zero, new IntPtr(((h / 2) << 16) | 2)).ToInt32() & 0xFFFF;
+            if (pos > 0 && pos < c.Text.Length)
+                s_issues.Add(page + ": Eingabefeld zeigt den Text nicht ab dem Anfang (erstes sichtbares Zeichen: " + pos + "): " + Describe(c));
+        }
         else if (c.Class == "ComboBox")
         {
             string sel = ComboTextOf(c.Hwnd);
@@ -260,8 +268,8 @@ public static class DialogLayoutCheck
             c.Class = ClassOf(h);
             c.Text = TextOf(h);
             c.Id = GetDlgCtrlID(h);
-            string n;
-            c.Name = s_ids.TryGetValue(c.Id, out n) ? n : null;
+            List<string> n;
+            c.Name = s_ids.TryGetValue(c.Id, out n) ? string.Join("/", n.ToArray()) : null;
             c.Style = style;
             c.ExStyle = GetWindowLong(h, GWL_EXSTYLE);
             c.Rc = new RECT { Left = tl.X, Top = tl.Y, Right = br.X, Bottom = br.Y };
@@ -357,15 +365,14 @@ public static class DialogLayoutCheck
         foreach (IntPtr h in Children(page, true))
         {
             int id = GetDlgCtrlID(h);
-            string n;
+            List<string> n;
             if (s_ids.TryGetValue(id, out n))
             {
-                if (n == "IDC_TASKBAR_WND_ON_LEFT_CHECK") return "Taskleistenfenster";
-                if (n == "IDC_AUTO_RUN_CHECK") return "Allgemein";
-                if (n == "IDC_HIDE_MAIN_WINDOW_WHEN_FULLSCREEN" || n == "IDC_FULLSCREEN_HIDE_CHECK") return "Hauptfenster";
+                if (n.Contains("IDC_TASKBAR_WND_ON_LEFT_CHECK")) return "Taskleiste";
+                if (n.Contains("IDC_AUTO_RUN_CHECK")) return "Allgemein";
             }
         }
-        return "Seite" + (index + 1);
+        return index == 0 ? "Hauptfenster" : "Seite" + (index + 1);
     }
 
     public static int Run(string exePath, string resourceHeader, string outDir, string fontName, string expectedTitle)
@@ -378,9 +385,12 @@ public static class DialogLayoutCheck
         {
             string[] parts = line.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
             int v;
-            if (parts.Length >= 3 && parts[0] == "#define" && int.TryParse(parts[2], out v) && !s_ids.ContainsKey(v)
+            if (parts.Length >= 3 && parts[0] == "#define" && int.TryParse(parts[2], out v)
                 && (parts[1].StartsWith("IDC_") || parts[1].StartsWith("TXT_")))
-                s_ids[v] = parts[1];
+            {
+                if (!s_ids.ContainsKey(v)) s_ids[v] = new List<string>();
+                s_ids[v].Add(parts[1]);
+            }
         }
 
         ProcessStartInfo psi = new ProcessStartInfo(exePath);
@@ -448,20 +458,21 @@ public static class DialogLayoutCheck
             List<IntPtr> pages = new List<IntPtr>();
             foreach (IntPtr h in Children(tab, true))
                 if (ClassOf(h) == "#32770") pages.Add(h);
-            // Reihenfolge: zuerst die sichtbare (Tab 0)
-            pages.Sort(delegate (IntPtr a, IntPtr b)
-            {
-                bool va = (GetWindowLong(a, GWL_STYLE) & WS_VISIBLE) != 0;
-                bool vb = (GetWindowLong(b, GWL_STYLE) & WS_VISIBLE) != 0;
-                return vb.CompareTo(va);
-            });
 
             for (int p = 0; p < pages.Count; p++)
             {
-                IntPtr page = pages[p];
+                // Reiter wie ein Benutzer wechseln (Pfeiltaste im Tab-Steuerelement -> TCN_SELCHANGE)
+                if (p > 0)
+                {
+                    SendMessage(tab, WM_KEYDOWN, new IntPtr(0x27 /* VK_RIGHT */), IntPtr.Zero);
+                    SendMessage(tab, WM_KEYUP, new IntPtr(0x27), IntPtr.Zero);
+                }
+                Thread.Sleep(500);
+                IntPtr page = IntPtr.Zero;
+                foreach (IntPtr h in pages)
+                    if ((GetWindowLong(h, GWL_STYLE) & WS_VISIBLE) != 0) page = h;
+                if (page == IntPtr.Zero) { s_issues.Add("Seite " + (p + 1) + " konnte nicht angezeigt werden"); continue; }
                 string name = PageName(page, p);
-                foreach (IntPtr other in pages) ShowWindow(other, other == page ? 5 : 0);
-                Thread.Sleep(300);
 
                 // nach oben scrollen
                 for (int k = 0; k < 10; k++) SendMessage(page, WM_VSCROLL, new IntPtr(2 /* SB_PAGEUP */), IntPtr.Zero);
