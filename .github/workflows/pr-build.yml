@@ -37,3 +37,16 @@ jobs:
           Bin/${{ matrix.platform }}/${{ matrix.configuration }}/*.config
         if-no-files-found: error
         retention-days: 30
+
+    - name: Dialog layout check (Deutsch)
+      id: layout
+      shell: powershell
+      run: .github/scripts/dialog-layout-check.ps1 -ExeDir "Bin/${{ matrix.platform }}/${{ matrix.configuration }}" -Language de-DE -OutDir "layout-check"
+
+    - name: Upload layout screenshots
+      if: always() && steps.layout.outcome != 'skipped'
+      uses: actions/upload-artifact@v4
+      with:
+        name: layout-check_${{ matrix.configuration == 'Release' && 'full' || 'lite' }}_de-DE
+        path: layout-check/
+        retention-days: 30
