@@ -480,7 +480,10 @@ public static class DialogLayoutCheck
             CheckPage(dlg, "Dialog");
 
             // Tab-Reiter passen nicht nebeneinander, wenn Pfeiltasten angezeigt werden
-            IntPtr updown = FindChildByClass(tab, "msctls_updown32");
+            // Nur direkte Kindfenster des Tab-Steuerelements: Drehfelder auf den Seiten sind ebenfalls "msctls_updown32"
+            IntPtr updown = IntPtr.Zero;
+            foreach (IntPtr h in Children(tab, true))
+                if (ClassOf(h) == "msctls_updown32") updown = h;
             {
                 RECT tc; GetClientRect(tab, out tc);
                 Console.WriteLine("Tab-Steuerelement: Breite " + (tc.Right - tc.Left) + "px, Reiter: " + SendMessage(tab, TCM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero).ToInt32());
