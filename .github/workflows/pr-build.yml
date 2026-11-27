@@ -26,3 +26,14 @@ jobs:
 
     - name: Run msbuild
       run: msbuild ${{ matrix.solution }} "-p:configuration=${{ matrix.configuration }}" -p:platform=${{ matrix.platform }} -p:platformToolset=v143 -m
+
+    - name: Upload build output
+      uses: actions/upload-artifact@v4
+      with:
+        name: TrafficMonitor_${{ matrix.platform }}_${{ matrix.configuration == 'Release' && 'full' || 'lite' }}_${{ github.sha }}
+        path: |
+          Bin/${{ matrix.platform }}/${{ matrix.configuration }}/*.exe
+          Bin/${{ matrix.platform }}/${{ matrix.configuration }}/*.dll
+          Bin/${{ matrix.platform }}/${{ matrix.configuration }}/*.config
+        if-no-files-found: error
+        retention-days: 30
