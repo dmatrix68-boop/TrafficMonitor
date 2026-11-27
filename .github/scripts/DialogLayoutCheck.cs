@@ -368,7 +368,7 @@ public static class DialogLayoutCheck
         return "Seite" + (index + 1);
     }
 
-    public static int Run(string exePath, string resourceHeader, string outDir, string fontName)
+    public static int Run(string exePath, string resourceHeader, string outDir, string fontName, string expectedTitle)
     {
         SetProcessDPIAware();
         if (!string.IsNullOrEmpty(fontName)) s_fontName = fontName;
@@ -432,7 +432,13 @@ public static class DialogLayoutCheck
             SetWindowPos(dlg, IntPtr.Zero, 0, 0, dr.Right - dr.Left, 740, 0x0004 /* SWP_NOZORDER */);
             Thread.Sleep(500);
 
-            Console.WriteLine("Dialog: \"" + TextOf(dlg) + "\"  DPI: " + GetDpiForWindow(dlg));
+            string title = TextOf(dlg);
+            Console.WriteLine("Dialog: \"" + title + "\"  DPI: " + GetDpiForWindow(dlg));
+            if (!string.IsNullOrEmpty(expectedTitle) && title != expectedTitle)
+            {
+                Console.WriteLine("FEHLER: Sprache wurde nicht geladen (erwarteter Titel \"" + expectedTitle + "\")");
+                return 2;
+            }
             CheckPage(dlg, "Dialog");
 
             // Tab-Reiter passen nicht nebeneinander, wenn Pfeiltasten angezeigt werden
