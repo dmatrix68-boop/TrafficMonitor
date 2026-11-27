@@ -166,6 +166,10 @@ public:
     //is_unsigned：数值是否是无符号的
     static CString IntToString(__int64 n, bool thousand_separation = false, bool is_unsigned = false);
 
+    //将鼠标提示文本截断到MFC允许的最大长度以内（CToolTipCtrl::UpdateTipText中超过1024个字符会抛出CInvalidArgException，
+    //表现为弹出“遇到不适当的参数”/“Encountered an improper argument”错误）
+    static void LimitTooltipText(CString& str);
+
     //删除字体名称后面的Bold、Light等字符串，并根据这些字符串设置字体粗细
     static void NormalizeFont(LOGFONT& font);
 

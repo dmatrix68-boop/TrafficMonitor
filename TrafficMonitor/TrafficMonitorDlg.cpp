@@ -138,6 +138,9 @@ BEGIN_MESSAGE_MAP(CTrafficMonitorDlg, CDialog)
     ON_COMMAND(ID_PLUGIN_DETAIL_TASKBAR, &CTrafficMonitorDlg::OnPluginDetailTaksbar)
     ON_WM_POWERBROADCAST()
     ON_WM_DWMCOLORIZATIONCOLORCHANGED()
+    ON_WM_ENDSESSION()
+    ON_MESSAGE(WM_REINIT_CONNECTION, &CTrafficMonitorDlg::OnReinitConnection)
+    ON_MESSAGE(WM_HARDWARE_MONITOR_ERROR, &CTrafficMonitorDlg::OnHardwareMonitorError)
 END_MESSAGE_MAP()
 
 
@@ -395,6 +398,11 @@ void CTrafficMonitorDlg::AutoSelect()
 
 void CTrafficMonitorDlg::IniConnection()
 {
+    //IniConnection只能在主线程中调用（其中会操作定时器和菜单），监控线程中需要调用RequestReinitConnection
+    //加锁，防止监控线程在m_pIfTable被释放和重新分配时访问它
+    CSingleLock sync(&m_connection_critical, TRUE);
+    m_reinit_connection_pending = false;
+
     //为m_pIfTable开辟所需大小的内存
     free(m_pIfTable);
     m_dwSize = sizeof(MIB_IFTABLE);
@@ -692,12 +700,15 @@ void CTrafficMonitorDlg::UpdateNotifyIconTip()
 
 void CTrafficMonitorDlg::SaveHistoryTraffic()
 {
+    // 历史流量数据会在监控线程中更新和保存，加锁防止与主线程（退出/关机时）同时写入文件
+    CSingleLock sync(&m_connection_critical, TRUE);
     // 使用增量保存，只更新第一行和今天的记录，减少I/O操作
     m_history_traffic.SaveTodayOnly();
 }
 
 void CTrafficMonitorDlg::SaveHistoryTrafficFull()
 {
+    CSingleLock sync(&m_connection_critical, TRUE);
     // 完整保存，用于程序退出时确保所有数据都保存
     m_history_traffic.Save();
 }
@@ -1199,27 +1210,45 @@ static int GetMonitorTimerCount(int second)
 }
 
 
+void CTrafficMonitorDlg::RequestReinitConnection()
+{
+    //监控线程中不能直接调用IniConnection（会释放m_pIfTable、操作定时器和菜单），
+    //因此向主线程发送消息，由主线程重新初始化连接。避免重复发送。
+    if (m_is_thread_exit || m_session_ending)
+        return;
+    if (!m_reinit_connection_pending.exchange(true))
+    {
+        if (!PostMessage(WM_REINIT_CONNECTION))
+            m_reinit_connection_pending = false;
+    }
+}
+
+afx_msg LRESULT CTrafficMonitorDlg::OnReinitConnection(WPARAM wParam, LPARAM lParam)
+{
+    if (!m_is_thread_exit && !m_session_ending)
+        IniConnection();
+    m_reinit_connection_pending = false;
+    return 0;
+}
+
 void CTrafficMonitorDlg::DoMonitorAcquisition()
 {
     //获取网络连接速度
+    //加锁，防止主线程在IniConnection中释放m_pIfTable或修改m_connections（例如从休眠恢复时），导致堆损坏崩溃
+    CSingleLock connection_sync(&m_connection_critical, TRUE);
     int rtn{};
     auto getLfTable = [&]() {
         __try
         {
-            rtn = GetIfTable(m_pIfTable, &m_dwSize, FALSE);
+            if (m_pIfTable != nullptr)
+                rtn = GetIfTable(m_pIfTable, &m_dwSize, FALSE);
+            else
+                rtn = ERROR_INSUFFICIENT_BUFFER;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            free(m_pIfTable);
-            m_dwSize = sizeof(MIB_IFTABLE);
-            m_pIfTable = (MIB_IFTABLE*)malloc(m_dwSize);
-            rtn = GetIfTable(m_pIfTable, &m_dwSize, FALSE);
-            if (rtn == ERROR_INSUFFICIENT_BUFFER)	//如果函数返回值为ERROR_INSUFFICIENT_BUFFER，说明m_pIfTable的大小不够
-            {
-                free(m_pIfTable);
-                m_pIfTable = (MIB_IFTABLE*)malloc(m_dwSize);	//用新的大小重新开辟一块内存
-            }
-            GetIfTable(m_pIfTable, &m_dwSize, FALSE);
+            //不在监控线程中重新分配内存，交给主线程重新初始化连接
+            rtn = ERROR_INSUFFICIENT_BUFFER;
         }
     };
 
@@ -1348,7 +1377,7 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
 
     if (rtn == ERROR_INSUFFICIENT_BUFFER)
     {
-        IniConnection();
+        RequestReinitConnection();
         CString info = CCommon::LoadText(IDS_INSUFFICIENT_BUFFER);
         info.Replace(_T("<%cnt%>"), CCommon::IntToString(m_restart_cnt));
         CCommon::WriteLog(info, theApp.m_log_path.c_str());
@@ -1370,7 +1399,7 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
                 info.Replace(_T("<%cnt%>"), CCommon::IntToString(m_restart_cnt + 1));
                 CCommon::WriteLog(info, theApp.m_log_path.c_str());
             }
-            IniConnection();
+            RequestReinitConnection();
             last_interface_num = interface_num;
         }
 
@@ -1390,12 +1419,15 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
                 CCommon::WriteLog(log_str, (theApp.m_config_dir + L".\\connections.log").c_str());
             }
 
-            IniConnection();
+            RequestReinitConnection();
             CString info = CCommon::LoadText(IDS_CONNECTION_NOT_MATCH);
             info.Replace(_T("<%cnt%>"), CCommon::IntToString(m_restart_cnt));
             CCommon::WriteLog(info, theApp.m_log_path.c_str());
         }
     }
+
+    //网络部分处理完毕，释放锁
+    connection_sync.Unlock();
 
     bool lite_version = false;
 #ifdef WITHOUT_TEMPERATURE
@@ -1469,6 +1501,7 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
         CSingleLock sync(&theApp.m_minitor_lib_critical, TRUE);
         CString error_info = CCommon::LoadText(IDS_HARDWARE_INFO_ACQUIRE_FAILED_ERROR);
 
+        bool seh_exception = false;
         auto getHardwareInfo = [&]() {
             __try
             {
@@ -1476,15 +1509,31 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
-                AfxMessageBox(error_info, MB_ICONERROR | MB_OK);
+                seh_exception = true;
             }
         };
 
         getHardwareInfo();
-        auto monitor_error_message{ OpenHardwareMonitorApi::GetErrorMessage() };
+        std::wstring monitor_error_message{ OpenHardwareMonitorApi::GetErrorMessage() };
+        if (seh_exception)
+            monitor_error_message = error_info.GetString();
         if (!monitor_error_message.empty())
         {
-            AfxMessageBox(monitor_error_message.c_str(), MB_ICONERROR | MB_OK);
+            //不在监控线程中弹出消息框（会阻塞监控线程并一直占用锁，且每次刷新都会弹出），
+            //而是写入日志并通知主线程（只提示一次）
+            static bool error_notified = false;
+            static std::wstring last_logged_error;
+            if (monitor_error_message != last_logged_error)
+            {
+                CCommon::WriteLog(monitor_error_message.c_str(), theApp.m_log_path.c_str());
+                last_logged_error = monitor_error_message;
+            }
+            if (!error_notified && !m_is_thread_exit && !m_session_ending)
+            {
+                error_notified = true;
+                m_hardware_error_msg = monitor_error_message;
+                PostMessage(WM_HARDWARE_MONITOR_ERROR);
+            }
         }
         //theApp.m_cpu_temperature = theApp.m_pMonitor->CpuTemperature();
         theApp.m_gpu_temperature = theApp.m_pMonitor->GpuTemperature();
@@ -1577,7 +1626,9 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     m_monitor_time_cnt++;
 
     //发送监控信息更新消息
-    SendMessage(WM_MONITOR_INFO_UPDATED);
+    //程序退出时主线程正在等待监控线程结束，此时不再发送消息
+    if (!m_is_thread_exit)
+        SendMessage(WM_MONITOR_INFO_UPDATED);
 }
 
 UINT CTrafficMonitorDlg::MonitorThreadCallback(LPVOID dwUser)
@@ -1601,6 +1652,7 @@ UINT CTrafficMonitorDlg::MonitorThreadCallback(LPVOID dwUser)
         if (pThis->m_is_thread_exit)
         {
             // 触发事件，通知主线程工作线程已退出
+            pThis->m_thread_exited = true;
             pThis->m_threadExitEvent.SetEvent();
             return 0;
         }
@@ -1614,9 +1666,67 @@ void CTrafficMonitorDlg::ExitMonitorThread()
 {
     // 通知线程退出
     m_is_thread_exit = true;
+    if (m_thread_exited)
+        return;
 
     // 等待线程退出
-    ::WaitForSingleObject(m_threadExitEvent.m_hObject, 1000);
+    // 监控线程可能正阻塞在SendMessage(WM_MONITOR_INFO_UPDATED)中等待主线程处理消息，
+    // 如果这里使用WaitForSingleObject，主线程不会处理发送过来的消息，导致死锁直到超时，
+    // 超时后对话框被销毁但监控线程仍在运行，从而在程序退出或关机时崩溃。
+    // 因此等待时继续处理其他线程发送过来的消息。
+    const ULONGLONG start_time = GetTickCount64();
+    const DWORD timeout = 5000;
+    HANDLE hEvent = m_threadExitEvent.m_hObject;
+    while (!m_thread_exited)
+    {
+        ULONGLONG elapsed = GetTickCount64() - start_time;
+        if (elapsed >= timeout)
+            break;
+        DWORD rtn = ::MsgWaitForMultipleObjects(1, &hEvent, FALSE, static_cast<DWORD>(timeout - elapsed), QS_SENDMESSAGE);
+        if (rtn == WAIT_OBJECT_0 + 1)
+        {
+            //处理其他线程通过SendMessage发送过来的消息
+            MSG msg;
+            ::PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE);
+        }
+        else
+        {
+            break;
+        }
+    }
+}
+
+
+void CTrafficMonitorDlg::ReleaseResourcesBeforeExit()
+{
+    static bool released = false;
+    if (released)
+        return;
+    released = true;
+
+    //停止所有定时器，防止退出过程中定时器继续触发（例如重新嵌入任务栏）
+    KillTimer(MAIN_TIMER);
+    KillTimer(MONITOR_TIMER);
+    KillTimer(TASKBAR_TIMER);
+    KillTimer(DELAY_TIMER);
+    KillTimer(INIT_CONNECT_TIMER);
+    KillTimer(RESTART_TASKBAR_TIMER);
+    KillTimer(DPI_CHANGE_TIMER);
+    KillTimer(DELETE_NOTIFY_ICON_TIMER);
+
+    // 停止监控线程
+    ExitMonitorThread();
+
+#ifndef WITHOUT_TEMPERATURE
+    //在程序仍正常运行时释放硬件监控对象（它会调用托管代码关闭LibreHardwareMonitor），
+    //而不是等到全局对象析构时（此时CLR可能已经关闭，会导致退出时崩溃）
+    //如果监控线程未能按时退出，它可能仍在使用该对象，此时不释放
+    if (m_thread_exited)
+    {
+        CSingleLock sync(&theApp.m_minitor_lib_critical, TRUE);
+        theApp.m_pMonitor.reset();
+    }
+#endif
 }
 
 
@@ -1626,7 +1736,8 @@ void CTrafficMonitorDlg::OnTimer(UINT_PTR nIDEvent)
     if (nIDEvent == MONITOR_TIMER)
     {
         //通知线程获取监控数据
-        m_monitor_data_required = true;
+        if (!m_session_ending)
+            m_monitor_data_required = true;
     }
 
     if (nIDEvent == MAIN_TIMER)
@@ -1977,7 +2088,10 @@ void CTrafficMonitorDlg::OnTimer(UINT_PTR nIDEvent)
 
     if (nIDEvent == DELAY_TIMER)
     {
-        AutoSelect();
+        {
+            CSingleLock sync(&m_connection_critical, TRUE);
+            AutoSelect();
+        }
         KillTimer(DELAY_TIMER);
     }
 
@@ -2126,7 +2240,7 @@ void CTrafficMonitorDlg::OnNetworkInfo()
 {
     // TODO: 在此添加命令处理程序代码
     //弹出“连接详情”对话框
-    CNetworkInfoDlg aDlg(m_connections, m_pIfTable->table, m_connection_selected);
+    CNetworkInfoDlg aDlg(m_connections, m_pIfTable, m_connection_selected, &m_connection_critical);
     ////向CNetworkInfoDlg类传递自启动以来已发送和接收的字节数
     //aDlg.m_in_bytes = m_pIfTable->table[m_connections[m_connection_selected].index].dwInOctets - m_connections[m_connection_selected].in_bytes;
     //aDlg.m_out_bytes = m_pIfTable->table[m_connections[m_connection_selected].index].dwOutOctets - m_connections[m_connection_selected].out_bytes;
@@ -2219,7 +2333,10 @@ BOOL CTrafficMonitorDlg::OnCommand(WPARAM wParam, LPARAM lParam)
     //选择了“选择网络连接”子菜单中项目时的处理
     if (uMsg == ID_SELETE_CONNECTION)   //选择了“自动选择”菜单项
     {
-        AutoSelect();
+        {
+            CSingleLock sync(&m_connection_critical, TRUE);
+            AutoSelect();
+        }
         theApp.m_cfg_data.m_auto_select = true;
         theApp.m_cfg_data.m_select_all = false;
         theApp.SaveConfig();
@@ -2227,9 +2344,12 @@ BOOL CTrafficMonitorDlg::OnCommand(WPARAM wParam, LPARAM lParam)
     }
     if (uMsg > ID_SELECT_ALL_CONNECTION && uMsg <= ID_SELECT_ALL_CONNECTION + m_connections.size()) //选择了一个网络连接
     {
-        m_connection_selected = uMsg - ID_SELECT_ALL_CONNECTION - 1;
-        theApp.m_cfg_data.m_connection_name = GetConnection(m_connection_selected).description_2;
-        m_connection_name_preferd = theApp.m_cfg_data.m_connection_name;
+        {
+            CSingleLock sync(&m_connection_critical, TRUE);
+            m_connection_selected = uMsg - ID_SELECT_ALL_CONNECTION - 1;
+            theApp.m_cfg_data.m_connection_name = GetConnection(m_connection_selected).description_2;
+            m_connection_name_preferd = theApp.m_cfg_data.m_connection_name;
+        }
         theApp.m_cfg_data.m_auto_select = false;
         theApp.m_cfg_data.m_select_all = false;
         theApp.SaveConfig();
@@ -2471,8 +2591,8 @@ void CTrafficMonitorDlg::OnDestroy()
     //程序退出时删除通知栏图标
     ::Shell_NotifyIcon(NIM_DELETE, &m_ntIcon);
 
-    // 停止监控线程
-    ExitMonitorThread();
+    // 停止监控线程并释放资源
+    ReleaseResourcesBeforeExit();
 }
 
 
@@ -2817,7 +2937,60 @@ BOOL CTrafficMonitorDlg::OnQueryEndSession()
         CCommon::WriteLog(_T("TrafficMonitor进程已被终止，设置已保存。"), (theApp.m_config_dir + L".\\debug.log").c_str());
     }
 
+    //系统即将注销/关机，停止重新嵌入任务栏等操作
+    m_session_ending = true;
+
     return TRUE;
+}
+
+
+void CTrafficMonitorDlg::OnEndSession(BOOL bEnding)
+{
+    if (!bEnding)
+    {
+        //关机/注销被取消，恢复正常运行
+        m_session_ending = false;
+        return;
+    }
+
+    m_session_ending = true;
+
+    //停止定时器和监控线程，释放硬件监控等资源。
+    //注意：这里不调用CDialog::OnEndSession，因为MFC默认会在这里调用ExitInstance（会关闭GDI+），
+    //而此时窗口仍然存在，之后的绘制操作会使用已关闭的GDI+，导致关机时出现崩溃提示。
+    ReleaseResourcesBeforeExit();
+
+    //监控线程已停止，保存最终数据
+    theApp.SaveConfig();
+    SaveHistoryTrafficFull();
+
+    //删除通知区图标
+    ::Shell_NotifyIcon(NIM_DELETE, &m_ntIcon);
+
+    //停止任务栏窗口的定时器（不再调整任务栏窗口大小和位置）。
+    //这里不销毁任务栏窗口，因为它嵌入在explorer的任务栏中，explorer此时也可能正在退出。
+    if (IsTaskbarWndValid())
+        m_tBarDlg->KillTimer(TASKBAR_TIMER);
+
+    if (theApp.m_debug_log)
+    {
+        CCommon::WriteLog(_T("WM_ENDSESSION: 资源已释放。"), (theApp.m_config_dir + L".\\debug.log").c_str());
+    }
+}
+
+
+afx_msg LRESULT CTrafficMonitorDlg::OnHardwareMonitorError(WPARAM wParam, LPARAM lParam)
+{
+    if (m_is_thread_exit || m_session_ending)
+        return 0;
+    std::wstring error_msg;
+    {
+        CSingleLock sync(&theApp.m_minitor_lib_critical, TRUE);
+        error_msg = m_hardware_error_msg;
+    }
+    if (!error_msg.empty())
+        MessageBox(error_msg.c_str(), NULL, MB_ICONERROR | MB_OK);
+    return 0;
 }
 
 
@@ -2873,6 +3046,9 @@ afx_msg LRESULT CTrafficMonitorDlg::OnDpichanged(WPARAM wParam, LPARAM lParam)
 
 afx_msg LRESULT CTrafficMonitorDlg::OnTaskbarWndClosed(WPARAM wParam, LPARAM lParam)
 {
+    //关机/注销时任务栏窗口可能会被系统关闭，此时不应修改“显示任务栏窗口”的设置
+    if (m_session_ending || m_is_thread_exit)
+        return 0;
     theApp.m_cfg_data.m_show_task_bar_wnd = false;
     //关闭任务栏窗口后，如果没有显示通知区图标，且没有显示主窗口或设置了鼠标穿透，则将通知区图标显示出来
     if (!theApp.m_general_data.show_notify_icon && theApp.IsForceShowNotifyIcon())
@@ -2887,6 +3063,9 @@ afx_msg LRESULT CTrafficMonitorDlg::OnTaskbarWndClosed(WPARAM wParam, LPARAM lPa
 
 afx_msg LRESULT CTrafficMonitorDlg::OnMonitorInfoUpdated(WPARAM wParam, LPARAM lParam)
 {
+    if (m_is_thread_exit || m_session_ending)
+        return 0;
+
     Invalidate(FALSE);      //刷新窗口信息
 
     //更新鼠标提示
@@ -2894,6 +3073,7 @@ afx_msg LRESULT CTrafficMonitorDlg::OnMonitorInfoUpdated(WPARAM wParam, LPARAM l
     {
         CString tip_info;
         tip_info = GetMouseTipsInfo();
+        CCommon::LimitTooltipText(tip_info);
         m_tool_tips.UpdateTipText(tip_info, this);
     }
     //更新任务栏窗口鼠标提示
@@ -3078,8 +3258,24 @@ void CTrafficMonitorDlg::OnPluginDetailTaksbar()
 
 UINT CTrafficMonitorDlg::OnPowerBroadcast(UINT nPowerEvent, LPARAM nEventData)
 {
+    // 系统即将进入睡眠/休眠：暂停获取监控数据，避免在挂起/恢复过程中访问网络接口表和硬件监控驱动
+    if (nPowerEvent == PBT_APMSUSPEND)
+    {
+        KillTimer(MONITOR_TIMER);
+        KillTimer(INIT_CONNECT_TIMER);
+        m_monitor_data_required = false;
+    }
+
+    // 系统从睡眠/休眠恢复（PBT_APMRESUMEAUTOMATIC总是会发送，PBT_APMRESUMESUSPEND只在用户操作唤醒时发送）
+    if ((nPowerEvent == PBT_APMRESUMEAUTOMATIC || nPowerEvent == PBT_APMRESUMESUSPEND) && !m_session_ending)
+    {
+        //恢复获取监控数据
+        KillTimer(MONITOR_TIMER);
+        SetTimer(MONITOR_TIMER, theApp.m_general_data.monitor_time_span, NULL);
+    }
+
     // 系统从休眠恢复
-    if (nPowerEvent == PBT_APMRESUMESUSPEND)
+    if (nPowerEvent == PBT_APMRESUMESUSPEND && !m_session_ending)
     {
         //延迟一段时间后重新初始化网络连接
         KillTimer(INIT_CONNECT_TIMER);

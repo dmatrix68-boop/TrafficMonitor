@@ -284,7 +284,18 @@ namespace OpenHardwareMonitorApi
 
     COpenHardwareMonitor::~COpenHardwareMonitor()
     {
-        MonitorGlobal::Instance()->UnInit();
+        //析构函数中不能抛出异常，否则程序会直接终止（退出/关机时弹出崩溃提示）
+        try
+        {
+            MonitorGlobal::Instance()->UnInit();
+        }
+        catch (System::Exception^ e)
+        {
+            error_message = ClrStringToStdWstring(e->Message);
+        }
+        catch (...)
+        {
+        }
     }
 
     void COpenHardwareMonitor::ResetAllValues()
@@ -419,7 +430,11 @@ namespace OpenHardwareMonitorApi
 
     void MonitorGlobal::UnInit()
     {
-        computer->Close();
+        if (computer != nullptr)
+        {
+            computer->Close();
+            computer = nullptr;
+        }
     }
 
 }

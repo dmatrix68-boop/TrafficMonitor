@@ -25,6 +25,7 @@
 #include "PdhHardwareQuery/GpuUsage.h"
 #include "PdhHardwareQuery/DiskUsage.h"
 #include "HistoryTrafficFile.h"
+#include <atomic>
 
 // CTrafficMonitorDlg 对话框
 class CTrafficMonitorDlg : public CDialog
@@ -58,7 +59,7 @@ protected:
     CTaskBarDlg* m_tBarDlg{};     //任务栏窗口的指针
 
     vector<NetWorkConection> m_connections; //保存获取到的要显示到“选择网卡”菜单项中的所有网络连接
-    MIB_IFTABLE* m_pIfTable;
+    MIB_IFTABLE* m_pIfTable{};
     DWORD m_dwSize{};	//m_pIfTable的大小
     int m_connection_selected{ 0 }; //要显示流量的连接的序号
     unsigned __int64 m_in_bytes{};        //当前已接收的字节数
@@ -131,9 +132,16 @@ protected:
 
     void DoMonitorAcquisition();    //获取一次监控信息
     static UINT MonitorThreadCallback(LPVOID dwUser);   //获取监控信息的线程函数
-    bool m_monitor_data_required{ false };          //线程中需要获取监控数据标志，当需要获取监控数据时置为true，获取到一次监控数据时置为false
-    bool m_is_thread_exit{ false }; //线程退出标志
+    std::atomic<bool> m_monitor_data_required{ false };          //线程中需要获取监控数据标志，当需要获取监控数据时置为true，获取到一次监控数据时置为false
+    std::atomic<bool> m_is_thread_exit{ false }; //线程退出标志
+    std::atomic<bool> m_thread_exited{ false };  //监控线程是否已经退出
+    std::atomic<bool> m_reinit_connection_pending{ false }; //是否已经向主线程请求重新初始化网络连接
+    std::atomic<bool> m_session_ending{ false }; //系统正在注销/关机
     CEvent m_threadExitEvent;       //用于通知主线程工作线程已退出
+    CCriticalSection m_connection_critical; //保护m_pIfTable、m_dwSize、m_connections和历史流量数据，防止主线程和监控线程同时访问
+    std::wstring m_hardware_error_msg;      //硬件监控的错误信息（受theApp.m_minitor_lib_critical保护）
+    void RequestReinitConnection(); //在监控线程中调用，请求主线程重新初始化网络连接
+    void ReleaseResourcesBeforeExit();  //程序退出或系统关机前停止监控线程并释放资源
 public:
     void ExitMonitorThread();       //停止监控线程
 
@@ -282,5 +290,8 @@ public:
     afx_msg void OnPluginOptionsTaksbar();
     afx_msg void OnPluginDetailTaksbar();
     afx_msg UINT OnPowerBroadcast(UINT nPowerEvent, LPARAM nEventData);
+    afx_msg void OnEndSession(BOOL bEnding);
+    afx_msg LRESULT OnReinitConnection(WPARAM wParam, LPARAM lParam);
+    afx_msg LRESULT OnHardwareMonitorError(WPARAM wParam, LPARAM lParam);
     afx_msg void OnColorizationColorChanged(DWORD dwColorizationColor, BOOL bOpacity);
 };

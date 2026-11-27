@@ -964,6 +964,7 @@ void CTaskBarDlg::UpdateToolTips()
     {
         CString tip_info;
         tip_info = GetMouseTipsInfo();
+        CCommon::LimitTooltipText(tip_info);
         m_tool_tips.UpdateTipText(tip_info, this);
     }
 }

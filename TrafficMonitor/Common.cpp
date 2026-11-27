@@ -1366,3 +1366,19 @@ CString CCommon::GetErrorMessage(DWORD error_code)
     }
     return error_msg;
 }
+
+void CCommon::LimitTooltipText(CString& str)
+{
+    const int MAX_TIP_LENGTH = 1024;     //MFC中的MAX_TIP_TEXT_LENGTH
+    if (str.GetLength() > MAX_TIP_LENGTH)
+    {
+        const CString ellipsis = _T("...");
+        int length = MAX_TIP_LENGTH - ellipsis.GetLength();
+        //不要截断在\r\n之间或代理对之间
+        if (length > 0 && IS_HIGH_SURROGATE(str[length - 1]))
+            length--;
+        if (length > 0 && str[length - 1] == _T('\r'))
+            length--;
+        str = str.Left(length) + ellipsis;
+    }
+}

@@ -75,6 +75,8 @@ using std::ofstream;
 #define WM_SETTINGS_APPLIED (WM_USER+1009)          //在选项设置中点击了“应用”按钮
 
 #define WM_NEXT_USER_MSG (WM_USER+1011)
+#define WM_REINIT_CONNECTION (WM_USER+1012)         //监控线程请求在主线程中重新初始化网络连接
+#define WM_HARDWARE_MONITOR_ERROR (WM_USER+1013)    //监控线程请求在主线程中显示硬件监控错误
 
 //#define CONFIG_PATH _T(".\\config.ini")
 //#define CONFIG_PATHA ".\\config.ini"
