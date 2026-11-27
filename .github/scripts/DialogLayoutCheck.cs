@@ -452,7 +452,8 @@ public static class DialogLayoutCheck
             CheckPage(dlg, "Dialog");
 
             // Tab-Reiter passen nicht nebeneinander, wenn Pfeiltasten angezeigt werden
-            if (FindChildByClass(tab, "msctls_updown32") != IntPtr.Zero)
+            IntPtr updown = FindChildByClass(tab, "msctls_updown32");
+            if (updown != IntPtr.Zero && (GetWindowLong(updown, GWL_STYLE) & WS_VISIBLE) != 0)
                 s_issues.Add("Dialog: Tab-Reiter passen nicht nebeneinander (Pfeile werden angezeigt)");
 
             List<IntPtr> pages = new List<IntPtr>();
