@@ -44,6 +44,17 @@ void CTabCtrlEx::SetCurTab(int index)
 		{
 			m_tab_list[i]->ShowWindow(SW_SHOW);
 			m_tab_list[i]->SetFocus();
+			// Erhält dabei ein einzeiliges Eingabefeld den Fokus (z. B. der Schriftname), markiert Windows den
+			// ganzen Text und scrollt ans Textende, so dass bei langen Texten nur das Ende sichtbar ist.
+			// Cursor an den Anfang setzen, damit der Text ab dem Anfang angezeigt wird.
+			CWnd* pFocus = GetFocus();
+			if (pFocus != nullptr && m_tab_list[i]->IsChild(pFocus))
+			{
+				TCHAR class_name[16]{};
+				::GetClassName(pFocus->GetSafeHwnd(), class_name, 16);
+				if (_tcsicmp(class_name, _T("Edit")) == 0 && (pFocus->GetStyle() & ES_MULTILINE) == 0)
+					pFocus->SendMessage(EM_SETSEL, 0, 0);
+			}
 		}
 		else
 		{
