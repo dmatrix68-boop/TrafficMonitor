@@ -1,0 +1,29 @@
+name: PR Build
+on:
+  push:
+    branches: ['claude/**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - solution: TrafficMonitor.sln
+            configuration: Release
+            platform: x64
+          - solution: TrafficMonitor_Lite.sln
+            configuration: Release (lite)
+            platform: x64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Add msbuild to PATH
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Run msbuild
+      run: msbuild ${{ matrix.solution }} "-p:configuration=${{ matrix.configuration }}" -p:platform=${{ matrix.platform }} -p:platformToolset=v143 -m
